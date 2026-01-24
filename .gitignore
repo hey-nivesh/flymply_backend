@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+venv/
+
+# Env secrets
+.env
+
+# Data
+data/raw/
+
+# Local test files
+payload.json
+
+# LLM adapters (optional)
+llm/adapters/
+
+data/raw/
+data/processed/
+*.npy
+*.npz
+data/processed/windows.npy
+data/raw/
+data/processed/
+*.npy
+*.npz
+data/processed/windows.npy
+
+venv/
+__pycache__/
+.env
