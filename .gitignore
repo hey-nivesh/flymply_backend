@@ -1,35 +1,66 @@
-# Python
+# Python internals
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
+.Python
 
-# Virtual env
+# Distribution / Packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
 venv/
-
-# Env secrets
+env/
+ENV/
 .env
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Data
 data/raw/
+data/processed/
+data_for_model/
 
-# Local test files
+# Models and Artifacts
+# Generally ignore large dumps, but un-ignore specific production assets
+*.npy
+*.npz
+# Keep the production model and stats
+!models/saved/normalization_stats.npz
+!models/saved/training_scores.npy
+!models/saved/lstm_autoencoder.pth
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+junit/
+test_predict.py
+test-gemma.py
 payload.json
-
-# LLM adapters (optional)
-llm/adapters/
-
-data/raw/
-data/processed/
-*.npy
-*.npz
-data/processed/windows.npy
-data/raw/
-data/processed/
-*.npy
-*.npz
-data/processed/windows.npy
-
-venv/
-__pycache__/
-.env
