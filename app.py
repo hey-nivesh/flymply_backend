@@ -190,13 +190,17 @@ def predict():
                     # Extract time_horizon and altitude_band from request or use defaults
                     time_horizon_min = data.get("time_horizon_min", 10)
                     altitude_band = data.get("altitude_band", "FL360")
+                    model_id = data.get("model_id")
+                    hf_token = data.get("hf_token")
                     
                     advisory = generate_advisory(
                         probability=probability,
                         severity=severity,
                         confidence=confidence,
                         time_horizon_min=time_horizon_min,
-                        altitude_band=altitude_band
+                        altitude_band=altitude_band,
+                        model_id=model_id,
+                        token=hf_token
                     )
                     response["advisory"] = advisory
                     response["model"] = "gemma-2b-it+lora"
@@ -258,13 +262,19 @@ def advisory():
         if not isinstance(altitude_band, str):
             return jsonify({"error": "altitude_band must be a string"}), 400
         
+        # Optional model config
+        model_id = data.get("model_id")
+        hf_token = data.get("hf_token")
+
         # Generate advisory
         advisory_text = generate_advisory(
             probability=float(probability),
             severity=severity,
             confidence=confidence,
             time_horizon_min=int(time_horizon_min),
-            altitude_band=altitude_band
+            altitude_band=altitude_band,
+            model_id=model_id,
+            token=hf_token
         )
         
         response = {

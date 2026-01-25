@@ -41,7 +41,6 @@ turbulence_backend/
 │   └── compute_training_scores.py  # Compute training anomaly scores
 └── tests/
     └── test_api.py          # API tests
-```
 
 ## Setup
 python -m venv venv
@@ -50,8 +49,6 @@ venv\Scripts\activate
 
 
 ### 1. Install Dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 

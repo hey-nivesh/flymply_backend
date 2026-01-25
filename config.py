@@ -44,4 +44,5 @@ RANDOM_SEED = 42
 # LLM configuration
 GEMMA_MODEL_ID = os.getenv("GEMMA_MODEL_ID", "google/gemma-2b-it")
 LORA_ADAPTER_PATH = os.getenv("LORA_ADAPTER_PATH", str(BASE_DIR / "llm" / "adapters" / "gemma_turbulence_advisor"))
+HF_TOKEN = os.getenv("HF_TOKEN")
 

@@ -18,7 +18,8 @@ class GemmaAdvisor:
         self,
         model_id: str = "google/gemma-2b-it",
         adapter_path: Optional[Path] = None,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        token: Optional[str] = None
     ):
         """
         Initialize Gemma advisor.
@@ -27,10 +28,12 @@ class GemmaAdvisor:
             model_id: HuggingFace model ID
             adapter_path: Path to LoRA adapter directory
             device: Device to use ("cuda", "cpu", or None for auto)
+            token: Hugging Face token
         """
         self.model_id = model_id
         self.adapter_path = adapter_path
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.token = token
         self.model = None
         self.tokenizer = None
         self._loaded = False
@@ -44,7 +47,7 @@ class GemmaAdvisor:
         
         # Load tokenizer
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, token=self.token)
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
         except Exception as e:
@@ -58,14 +61,16 @@ class GemmaAdvisor:
                     self.model_id,
                     device_map="auto",
                     torch_dtype=torch.float16,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    token=self.token
                 )
             else:
                 logger.info("Using CPU inference")
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_id,
                     torch_dtype=torch.float32,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    token=self.token
                 ).to(self.device)
         except Exception as e:
             logger.error(f"Failed to load base model: {e}")
@@ -75,7 +80,7 @@ class GemmaAdvisor:
         if self.adapter_path and Path(self.adapter_path).exists():
             try:
                 logger.info(f"Loading LoRA adapter from {self.adapter_path}")
-                self.model = PeftModel.from_pretrained(self.model, self.adapter_path)
+                self.model = PeftModel.from_pretrained(self.model, self.adapter_path, token=self.token)
                 logger.info("LoRA adapter loaded successfully")
             except Exception as e:
                 logger.warning(f"Failed to load LoRA adapter: {e}")
@@ -180,7 +185,8 @@ _advisor_instance = None
 
 def get_advisor(
     model_id: Optional[str] = None,
-    adapter_path: Optional[Path] = None
+    adapter_path: Optional[Path] = None,
+    token: Optional[str] = None
 ) -> GemmaAdvisor:
     """
     Get or create global Gemma advisor instance.
@@ -188,23 +194,43 @@ def get_advisor(
     Args:
         model_id: HuggingFace model ID (uses env var if None)
         adapter_path: Path to LoRA adapter (uses env var if None)
+        token: Hugging Face token
         
     Returns:
         GemmaAdvisor instance
     """
     global _advisor_instance
     
-    if _advisor_instance is None:
-        if model_id is None:
-            model_id = os.getenv("GEMMA_MODEL_ID", "google/gemma-2b-it")
+    # Determine configuration
+    if model_id is None:
+        model_id = os.getenv("GEMMA_MODEL_ID", "google/gemma-2b-it")
+    
+    if adapter_path is None:
+        adapter_str = os.getenv("LORA_ADAPTER_PATH", "llm/adapters/gemma_turbulence_advisor/")
+        adapter_path = Path(adapter_str)
+
+    if token is None:
+        token = os.getenv("HF_TOKEN")
         
-        if adapter_path is None:
-            adapter_str = os.getenv("LORA_ADAPTER_PATH", "llm/adapters/gemma_turbulence_advisor/")
-            adapter_path = Path(adapter_str)
-        
+    # Check if we need to reload
+    should_reload = False
+    if _advisor_instance is not None:
+        if _advisor_instance.model_id != model_id:
+            logger.info(f"Reloading: Model ID changed from {_advisor_instance.model_id} to {model_id}")
+            should_reload = True
+        elif str(_advisor_instance.adapter_path) != str(adapter_path):
+            # Basic path string comparison
+            logger.info("Reloading: Adapter path changed")
+            should_reload = True
+        elif _advisor_instance.token != token:
+            logger.info("Reloading: Token changed")
+            should_reload = True
+
+    if _advisor_instance is None or should_reload:
         _advisor_instance = GemmaAdvisor(
             model_id=model_id,
-            adapter_path=adapter_path
+            adapter_path=adapter_path,
+            token=token
         )
     
     return _advisor_instance
@@ -215,7 +241,9 @@ def generate_advisory(
     severity: str,
     confidence: str,
     time_horizon_min: int,
-    altitude_band: str
+    altitude_band: str,
+    model_id: Optional[str] = None,
+    token: Optional[str] = None
 ) -> str:
     """
     Generate turbulence advisory (convenience function).
@@ -226,11 +254,13 @@ def generate_advisory(
         confidence: "Low", "Medium", or "High"
         time_horizon_min: Time horizon in minutes
         altitude_band: Altitude band (e.g., "FL360")
+        model_id: Optional model ID override
+        token: Optional HF token override
         
     Returns:
         Generated advisory text
     """
-    advisor = get_advisor()
+    advisor = get_advisor(model_id=model_id, token=token)
     return advisor.generate_advisory(
         probability, severity, confidence, time_horizon_min, altitude_band
     )
