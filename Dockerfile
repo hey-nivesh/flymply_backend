@@ -2,27 +2,26 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install system dependencies
-# gcc/g++ might be needed for some python packages like bitsandbytes
+# Install system dependencies (only if required)
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for cache
+# Copy requirements first (better cache)
 COPY requirements.txt .
+
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy app code
 COPY . .
 
-# Environment variables
+# Env
 ENV PYTHONUNBUFFERED=1
-ENV PORT=5000
-# MODEL_PATH, etc. can be overridden at runtime
 
-# Expose port
+# Render sets PORT dynamically, so DO NOT hardcode ENV PORT=5000 here
+# EXPOSE is optional in Render but harmless
 EXPOSE 5000
 
-# Run with Gunicorn using the config file
-CMD ["gunicorn", "-c", "gunicorn_config.py", "app:app"]
+# Run Gunicorn (1 worker + longer timeout + bind to Render PORT)
+CMD ["sh", "-c", "gunicorn -w 1 -b 0.0.0.0:${PORT} --timeout 120 app:app"]
