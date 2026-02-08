@@ -36,6 +36,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Try to import new hackathon services
+try:
+    from services.weather_service import WeatherService
+    from services.ml_service import TurbulenceMLModel
+    from services.gemma_service import GemmaService
+    from hackathon_utils.feature_engineering import FeatureEngineer
+    HACKATHON_SERVICES_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Hackathon services not available: {e}")
+    HACKATHON_SERVICES_AVAILABLE = False
+    WeatherService = None
+    TurbulenceMLModel = None
+    GemmaService = None
+    FeatureEngineer = None
+
+# Initialize hackathon services if available
+if HACKATHON_SERVICES_AVAILABLE:
+    try:
+        weather_service = WeatherService()
+        ml_model = TurbulenceMLModel()
+        gemma_service = GemmaService()
+        feature_engineer = FeatureEngineer()
+        logger.info("Hackathon services initialized successfully")
+    except Exception as e:
+        logger.warning(f"Failed to initialize hackathon services: {e}")
+        HACKATHON_SERVICES_AVAILABLE = False
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
@@ -61,11 +88,11 @@ def load_model():
             model.eval()
             logger.info(f"Model loaded from {MODEL_PATH}")
         except FileNotFoundError:
-            logger.error(f"Model not found at {MODEL_PATH}")
-            raise
+            logger.warning(f"LSTM model not found at {MODEL_PATH}. Using hackathon ML service as fallback.")
+            model = None  # Will use hackathon service instead
         except Exception as e:
-            logger.error(f"Error loading model: {str(e)}")
-            raise
+            logger.warning(f"Error loading LSTM model: {str(e)}. Using hackathon ML service as fallback.")
+            model = None  # Will use hackathon service instead
     return model
 
 
@@ -105,9 +132,19 @@ def health():
 def predict():
     """Predict turbulence probability from input window."""
     try:
-        # Load model and scores if not already loaded
-        model = load_model()
+        # Try to load LSTM model, fallback to hackathon service if not available
+        lstm_model = load_model()
         scores = load_training_scores()
+        
+        # If LSTM model is not available, use hackathon service
+        if lstm_model is None:
+            if HACKATHON_SERVICES_AVAILABLE:
+                logger.info("LSTM model not available, using hackathon ML service")
+                return predict_with_hackathon_service()
+            else:
+                return jsonify({
+                    "error": "LSTM model not found and hackathon services unavailable. Please train the model first."
+                }), 503
         
         # Validate request
         if not request.is_json:
@@ -163,7 +200,7 @@ def predict():
             logger.warning("No normalization stats found, using raw input")
         
         # Compute anomaly score
-        anomaly_score = compute_anomaly_score(model, window_array, device=str(device))
+        anomaly_score = compute_anomaly_score(lstm_model, window_array, device=str(device))
         
         # Compute probability
         probability = compute_probability(anomaly_score, scores)
@@ -216,6 +253,144 @@ def predict():
     except Exception as e:
         logger.error(f"Prediction error: {str(e)}")
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+def predict_with_hackathon_service():
+    """Fallback prediction using hackathon ML service when LSTM model is unavailable."""
+    try:
+        data = request.get_json() or {}
+        
+        # Check if we have window data (from /predict endpoint) or lat/lon (from /predict-cat)
+        if 'window' in data:
+            # Extract features from window data
+            window = data.get('window', [])
+            if not window or len(window) == 0:
+                return jsonify({"error": "Window data is required"}), 400
+            
+            try:
+                window_array = np.array(window, dtype=np.float32)
+            except (ValueError, TypeError) as e:
+                return jsonify({"error": f"Invalid window data: {str(e)}"}), 400
+            
+            if window_array.ndim != 2 or window_array.shape[1] != NUM_FEATURES:
+                return jsonify({"error": f"Window must be 2D array with {NUM_FEATURES} features per row"}), 400
+            
+            # Extract features from window: [altitude, velocity, vertical_rate, u_wind, v_wind, temperature]
+            # Calculate statistics from the window
+            u_wind_values = window_array[:, 3]  # u_wind column
+            v_wind_values = window_array[:, 4]  # v_wind column
+            temp_values = window_array[:, 5]     # temperature column
+            vertical_rate_values = window_array[:, 2]  # vertical_rate column
+            
+            # Calculate wind speed from u and v components
+            wind_speeds = np.sqrt(u_wind_values**2 + v_wind_values**2)
+            avg_wind_speed = float(np.mean(wind_speeds))
+            wind_change = float(np.std(wind_speeds))  # Variability in wind speed
+            
+            # Calculate temperature gradient (variation)
+            temp_gradient = float(np.std(temp_values))
+            
+            # Calculate pressure drop (using vertical rate as proxy for pressure changes)
+            pressure_drop = float(np.std(vertical_rate_values))  # High vertical rate variance = pressure changes
+            
+            # Create features dict for ML model
+            features = {
+                'wind_speed': avg_wind_speed,
+                'wind_change': wind_change,
+                'temp_gradient': temp_gradient,
+                'pressure_drop': pressure_drop
+            }
+            
+            # Create mock weather data for Gemma service
+            weather_data = {
+                'wind_speed': avg_wind_speed,
+                'temperature': float(np.mean(temp_values)),
+                'pressure': 1013.25,  # Standard sea level pressure
+                'humidity': 50.0  # Default
+            }
+            
+        elif 'lat' in data or 'lon' in data:
+            # Original behavior: use lat/lon to get weather data
+            lat = data.get('lat', 40.7128)
+            lon = data.get('lon', -74.0060)
+            
+            # 1. Get weather data
+            weather_data = weather_service.get_weather_data(lat, lon)
+            
+            # 2. Extract features
+            features = feature_engineer.extract_features(weather_data)
+        else:
+            return jsonify({"error": "Either 'window' or 'lat'/'lon' must be provided"}), 400
+        
+        # 3. ML prediction
+        ml_probability = ml_model.predict(features)
+        
+        # 4. Gemma reasoning (if available)
+        try:
+            gemma_result = gemma_service.analyze_turbulence(weather_data, ml_probability)
+            final_probability = gemma_result['adjusted_probability']
+            gemma_adjustment = gemma_result['raw_adjustment']
+            reasoning = gemma_result['reasoning']
+        except Exception as gemma_error:
+            logger.warning(f"Gemma service unavailable: {gemma_error}. Using ML prediction only.")
+            final_probability = ml_probability
+            gemma_adjustment = 0
+            reasoning = "ML model prediction only (Gemma service unavailable)"
+        
+        # 5. Final probability
+        turbulence_percentage = round(final_probability * 100)
+        
+        # Determine severity based on probability
+        if final_probability < 0.3:
+            severity = "Low"
+        elif final_probability < 0.7:
+            severity = "Moderate"
+        else:
+            severity = "High"
+        
+        # Determine confidence based on feature variance
+        feature_variance = wind_change + temp_gradient + pressure_drop
+        if feature_variance > 3.0:
+            confidence = "High"
+        elif feature_variance > 1.5:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
+        
+        # Generate advisory based on severity
+        advisory = generate_advisory_from_prediction(final_probability, severity, confidence, 
+                                                     data.get('time_horizon_min', 15),
+                                                     data.get('altitude_band', 'FL380'))
+        
+        return jsonify({
+            "turbulence_probability": float(final_probability),  # 0-1 range
+            "severity": severity,
+            "confidence": confidence,
+            "anomaly_score": float(feature_variance / 10.0),  # Normalized feature variance
+            "advisory": advisory,
+            "model_type": "hackathon_ml",
+            "ml_score": round(ml_probability * 100),
+            "gemma_adjustment": gemma_adjustment,
+            "reasoning": reasoning
+        })
+        
+    except Exception as e:
+        logger.error(f"Hackathon service prediction error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Hackathon service error: {str(e)}"}), 500
+
+
+def generate_advisory_from_prediction(probability, severity, confidence, time_horizon_min, altitude_band):
+    """Generate advisory text from prediction data."""
+    prob_percent = round(probability * 100)
+    
+    if severity == "High":
+        return f"SEVERE CAT WARNING: {prob_percent}% turbulence probability at {altitude_band}. Immediate altitude change recommended. High confidence. Expected within {time_horizon_min} minutes."
+    elif severity == "Moderate":
+        return f"Moderate turbulence likely ahead in ~{time_horizon_min} minutes at {altitude_band}. Probability {prob_percent}%. Seatbelt ON. {confidence} confidence."
+    else:
+        return f"Conditions stable. Turbulence probability {prob_percent}% at {altitude_band}. Low risk expected for next {time_horizon_min} minutes. {confidence} confidence."
 
 
 @app.route('/advisory', methods=['POST'])
@@ -373,6 +548,81 @@ def train():
     except Exception as e:
         logger.error(f"Training pipeline error: {str(e)}")
         return jsonify({"error": f"Training failed: {str(e)}"}), 500
+
+
+# ============================================================================
+# HACKATHON ENDPOINTS - Simple CAT Prediction System
+# ============================================================================
+
+@app.route('/weather', methods=['GET'])
+def get_weather():
+    """Fetch current weather data"""
+    if not HACKATHON_SERVICES_AVAILABLE:
+        return jsonify({"error": "Hackathon services not available"}), 503
+    
+    try:
+        lat = request.args.get('lat', 40.7128, type=float)
+        lon = request.args.get('lon', -74.0060, type=float)
+        
+        weather_data = weather_service.get_weather_data(lat, lon)
+        return jsonify(weather_data)
+    except Exception as e:
+        logger.error(f"Weather endpoint error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/predict-cat', methods=['POST'])
+def predict_turbulence():
+    """
+    Predict turbulence risk (Hackathon version)
+    Input: JSON with optional lat/lon and flight_altitude
+    Returns: turbulence probability and risk level
+    """
+    if not HACKATHON_SERVICES_AVAILABLE:
+        return jsonify({"error": "Hackathon services not available"}), 503
+    
+    try:
+        data = request.get_json() or {}
+        lat = data.get('lat', 40.7128)
+        lon = data.get('lon', -74.0060)
+        
+        # 1. Get weather data
+        weather_data = weather_service.get_weather_data(lat, lon)
+        
+        # 2. Extract features
+        features = feature_engineer.extract_features(weather_data)
+        
+        # 3. ML prediction
+        ml_probability = ml_model.predict(features)
+        
+        # 4. Gemma reasoning
+        gemma_result = gemma_service.analyze_turbulence(weather_data, ml_probability)
+        
+        # 5. Final probability
+        final_probability = gemma_result['adjusted_probability']
+        turbulence_percentage = round(final_probability * 100)
+        
+        # Determine risk level
+        if turbulence_percentage < 40:
+            risk_level = "Low"
+        elif turbulence_percentage < 70:
+            risk_level = "Medium"
+        else:
+            risk_level = "High"
+        
+        return jsonify({
+            "turbulence_probability": turbulence_percentage,
+            "risk_level": risk_level,
+            "weather": weather_data,
+            "features": features,
+            "ml_score": round(ml_probability * 100),
+            "gemma_adjustment": gemma_result['raw_adjustment'],
+            "reasoning": gemma_result['reasoning']
+        })
+        
+    except Exception as e:
+        logger.error(f"CAT prediction error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
